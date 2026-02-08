@@ -8,7 +8,7 @@ from threading import Lock
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, Query, Request as FastAPIRequest
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_redoc_html
 from fastapi.openapi.utils import get_openapi
@@ -162,27 +162,27 @@ def _flatten_validation_errors(exc: RequestValidationError) -> str:
 
 
 @api.exception_handler(HTTPException)
-async def http_exception_handler(_: Request, exc: HTTPException):
+async def http_exception_handler(_: FastAPIRequest, exc: HTTPException):
     details = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
     payload = ErrorResponse(error="request_failed", details=details, status=exc.status_code)
     return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
 
 
 @api.exception_handler(RequestValidationError)
-async def request_validation_exception_handler(_: Request, exc: RequestValidationError):
+async def request_validation_exception_handler(_: FastAPIRequest, exc: RequestValidationError):
     payload = ErrorResponse(error="validation_error", details=_flatten_validation_errors(exc), status=422)
     return JSONResponse(status_code=422, content=payload.model_dump())
 
 
 @api.exception_handler(Exception)
-async def unhandled_exception_handler(_: Request, exc: Exception):
+async def unhandled_exception_handler(_: FastAPIRequest, exc: Exception):
     logger.error(f"Unhandled API exception: {exc}", exc_info=True)
     payload = ErrorResponse(error="internal_server_error", details="Unexpected server error", status=500)
     return JSONResponse(status_code=500, content=payload.model_dump())
 
 
 @api.middleware("http")
-async def measure_request_latency(request: Request, call_next):
+async def measure_request_latency(request: FastAPIRequest, call_next):
     """Capture basic request latency metrics for all API calls."""
     timer = RequestTimer()
     response = await call_next(request)
