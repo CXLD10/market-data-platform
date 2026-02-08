@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 from threading import Lock
 from urllib.error import HTTPError, URLError
-from urllib.request import Request as UrlRequest, urlopen
+from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request as FastAPIRequest
 from fastapi.exceptions import RequestValidationError
@@ -99,7 +99,7 @@ def _load_redoc_bundle() -> bytes:
 
         for url in REDOC_BUNDLE_URLS:
             try:
-                request = UrlRequest(url, headers={"User-Agent": "market-data-platform/1.0"})
+                request = Request(url, headers={"User-Agent": "market-data-platform/1.0"})
                 with urlopen(request, timeout=8) as response:
                     payload = response.read()
 
