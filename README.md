@@ -27,9 +27,10 @@ Downstream systems (ML, analytics, portfolio, and research services) should expe
 - backward-compatible evolution of existing contracts
 
 ## Live deployment links
-- Base URL: `https://YOUR_CLOUD_RUN_URL`
-- Swagger UI: `https://YOUR_CLOUD_RUN_URL/docs`
-- Health check: `https://YOUR_CLOUD_RUN_URL/health`
+- Base URL: `https://market-data-platform-3qp7bblccq-uc.a.run.app`
+- Swagger UI: `https://market-data-platform-3qp7bblccq-uc.a.run.app/docs`
+- Health check: `https://market-data-platform-3qp7bblccq-uc.a.run.app/health`
+- Redoc Page: `https://market-data-platform-3qp7bblccq-uc.a.run.app/redoc`
 
 ## Core API capabilities
 - `GET /symbols` — list available symbols with pagination bounds
