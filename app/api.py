@@ -6,7 +6,8 @@ from datetime import datetime, timezone, timedelta
 import logging
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import text, and_
 from sqlalchemy.orm import Session
 
@@ -23,20 +24,89 @@ from app.schemas import (
     TradesListResponse,
     CandleResponse,
     CandlesListResponse,
+    ErrorResponse,
+    IngestionStatusResponse,
+    MetricsResponse,
+    RootResponse,
 )
 
 logger = logging.getLogger(__name__)
 
 MAX_TRADE_LIMIT = 1000
 DEFAULT_TRADE_LIMIT = 100
+MAX_SYMBOLS_LIMIT = 500
+DEFAULT_SYMBOLS_LIMIT = 100
+MAX_CANDLE_LIMIT = 5000
+DEFAULT_CANDLE_LIMIT = 500
 SUPPORTED_INTERVALS = {"1m": timedelta(minutes=1)}
+SYMBOL_PATTERN = r"^[A-Za-z0-9._-]{1,16}$"
 
 # Create FastAPI app
 api = FastAPI(
     title="Market Data Platform",
-    description="Authoritative source for financial price information",
+    description=(
+        "Authoritative source for financial price information.\n\n"
+        "All endpoints are read-only and return UTC timestamps. "
+        "Errors use the standardized shape `{error, details, status}`."
+    ),
     version="1.0.0"
 )
+
+
+ERROR_RESPONSES = {
+    400: {
+        "model": ErrorResponse,
+        "description": "Bad request",
+        "content": {"application/json": {"example": {"error": "request_failed", "details": "start must be before end", "status": 400}}},
+    },
+    404: {
+        "model": ErrorResponse,
+        "description": "Resource not found",
+        "content": {"application/json": {"example": {"error": "request_failed", "details": "Symbol XYZ not found", "status": 404}}},
+    },
+    422: {
+        "model": ErrorResponse,
+        "description": "Validation error",
+        "content": {"application/json": {"example": {"error": "validation_error", "details": "[{'loc': ['query', 'symbol'], 'msg': 'String should match pattern'}]", "status": 422}}},
+    },
+    500: {
+        "model": ErrorResponse,
+        "description": "Internal server error",
+        "content": {"application/json": {"example": {"error": "internal_server_error", "details": "Unexpected server error", "status": 500}}},
+    },
+}
+
+
+
+
+def _flatten_validation_errors(exc: RequestValidationError) -> str:
+    """Return a concise, stable validation message string."""
+    parts = []
+    for err in exc.errors():
+        loc = ".".join(str(i) for i in err.get("loc", []) if i != "body")
+        msg = err.get("msg", "Invalid value")
+        parts.append(f"{loc}: {msg}")
+    return "; ".join(parts)
+
+
+@api.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException):
+    details = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    payload = ErrorResponse(error="request_failed", details=details, status=exc.status_code)
+    return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
+
+
+@api.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(_: Request, exc: RequestValidationError):
+    payload = ErrorResponse(error="validation_error", details=_flatten_validation_errors(exc), status=422)
+    return JSONResponse(status_code=422, content=payload.model_dump())
+
+
+@api.exception_handler(Exception)
+async def unhandled_exception_handler(_: Request, exc: Exception):
+    logger.error(f"Unhandled API exception: {exc}", exc_info=True)
+    payload = ErrorResponse(error="internal_server_error", details="Unexpected server error", status=500)
+    return JSONResponse(status_code=500, content=payload.model_dump())
 
 
 @api.middleware("http")
@@ -162,7 +232,7 @@ def _compute_candles_from_trades(
         candle.trade_count = values["trade_count"]
 
 
-@api.get("/health", response_model=HealthResponse)
+@api.get("/health", response_model=HealthResponse, responses=ERROR_RESPONSES, summary="Service health", description="Checks database connectivity and returns ingestion-aware health metadata.")
 async def health_check(db: Session = Depends(get_db)):
     """
     Health check endpoint.
@@ -191,7 +261,7 @@ async def health_check(db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="Service unavailable")
 
 
-@api.get("/status/ingestion")
+@api.get("/status/ingestion", response_model=IngestionStatusResponse, responses=ERROR_RESPONSES, summary="Ingestion status", description="Returns freshness and heartbeat telemetry for ingestion.")
 async def ingestion_status(db: Session = Depends(get_db)):
     """Expose ingestion freshness and DB connectivity status."""
     try:
@@ -233,7 +303,7 @@ async def ingestion_status(db: Session = Depends(get_db)):
     }
 
 
-@api.get("/metrics")
+@api.get("/metrics", response_model=MetricsResponse, responses=ERROR_RESPONSES, summary="Runtime metrics", description="Returns service uptime, DB status, and request latency aggregates.")
 async def metrics(db: Session = Depends(get_db)):
     """Runtime metrics endpoint for counts, latency, heartbeat, and DB status."""
     db_healthy = True
@@ -352,14 +422,23 @@ async def dashboard():
 """
 
 
-@api.get("/symbols", response_model=SymbolsListResponse)
-async def get_symbols(db: Session = Depends(get_db)):
+@api.get("/symbols", response_model=SymbolsListResponse, responses=ERROR_RESPONSES, summary="List symbols", description="Returns symbols with optional pagination limits for large catalogs.")
+async def get_symbols(
+    limit: int = Query(
+        DEFAULT_SYMBOLS_LIMIT,
+        ge=1,
+        le=MAX_SYMBOLS_LIMIT,
+        description=f"Maximum symbols to return (1-{MAX_SYMBOLS_LIMIT})",
+        examples=[100],
+    ),
+    db: Session = Depends(get_db),
+):
     """
     Get all available symbols.
     Returns the list of symbols that have price data.
     """
     try:
-        symbols = db.query(Symbol).order_by(Symbol.symbol).all()
+        symbols = db.query(Symbol).order_by(Symbol.symbol).limit(limit).all()
 
         return SymbolsListResponse(
             symbols=[SymbolResponse.model_validate(s) for s in symbols],
@@ -370,9 +449,9 @@ async def get_symbols(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@api.get("/price/latest", response_model=PriceResponse)
+@api.get("/price/latest", response_model=PriceResponse, responses={**ERROR_RESPONSES, 200: {"description": "Latest trade", "content": {"application/json": {"example": {"symbol": "AAPL", "price": 185.42, "volume": 120.0, "timestamp": "2024-01-01T00:59:30Z"}}}}}, summary="Latest trade price", description="Returns the most recent trade for a symbol.")
 async def get_latest_price(
-    symbol: str = Query(..., description="Symbol to query (e.g., AAPL)"),
+    symbol: str = Query(..., min_length=1, max_length=16, pattern=SYMBOL_PATTERN, description="Symbol to query (e.g., AAPL)", examples=["AAPL"]),
     db: Session = Depends(get_db)
 ):
     """
@@ -405,12 +484,12 @@ async def get_latest_price(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@api.get("/trades", response_model=TradesListResponse)
+@api.get("/trades", response_model=TradesListResponse, responses={**ERROR_RESPONSES, 200: {"description": "Trades window", "content": {"application/json": {"example": {"symbol": "AAPL", "start": "2024-01-01T00:00:00Z", "end": "2024-01-01T01:00:00Z", "limit": 100, "count": 2, "trades": [{"symbol": "AAPL", "price": 185.42, "volume": 120.0, "timestamp": "2024-01-01T00:59:30Z"}, {"symbol": "AAPL", "price": 185.4, "volume": 95.0, "timestamp": "2024-01-01T00:59:00Z"}]}}}}}, summary="Historical trades", description="Returns time-bounded trades for a symbol in descending timestamp order.")
 async def get_trades(
-    symbol: str = Query(..., description="Symbol to query (e.g., AAPL)"),
-    start: datetime = Query(..., description="Inclusive start timestamp (ISO-8601)"),
-    end: datetime = Query(..., description="Exclusive end timestamp (ISO-8601)"),
-    limit: int = Query(DEFAULT_TRADE_LIMIT, ge=1, le=MAX_TRADE_LIMIT, description=f"Max trades to return (1-{MAX_TRADE_LIMIT})"),
+    symbol: str = Query(..., min_length=1, max_length=16, pattern=SYMBOL_PATTERN, description="Symbol to query (e.g., AAPL)", examples=["AAPL"]),
+    start: datetime = Query(..., description="Inclusive start timestamp (ISO-8601, timezone required)", examples=["2024-01-01T00:00:00Z"]),
+    end: datetime = Query(..., description="Exclusive end timestamp (ISO-8601, timezone required)", examples=["2024-01-01T01:00:00Z"]),
+    limit: int = Query(DEFAULT_TRADE_LIMIT, ge=1, le=MAX_TRADE_LIMIT, description=f"Max trades to return (1-{MAX_TRADE_LIMIT})", examples=[100]),
     db: Session = Depends(get_db),
 ):
     """Get trades in a time range for a symbol."""
@@ -441,12 +520,13 @@ async def get_trades(
     )
 
 
-@api.get("/candles", response_model=CandlesListResponse)
+@api.get("/candles", response_model=CandlesListResponse, responses={**ERROR_RESPONSES, 200: {"description": "Candle window", "content": {"application/json": {"example": {"symbol": "AAPL", "interval": "1m", "start": "2024-01-01T00:00:00Z", "end": "2024-01-01T01:00:00Z", "count": 1, "candles": [{"symbol": "AAPL", "interval": "1m", "timestamp": "2024-01-01T00:00:00Z", "open": 185.0, "high": 185.5, "low": 184.9, "close": 185.4, "volume": 540.0, "trade_count": 8}]}}}}}, summary="OHLCV candles", description="Returns computed OHLCV candles for a symbol and interval.")
 async def get_candles(
-    symbol: str = Query(..., description="Symbol to query (e.g., AAPL)"),
-    interval: str = Query("1m", description="Candle interval (currently supports: 1m)"),
-    start: datetime = Query(..., description="Inclusive start timestamp (ISO-8601)"),
-    end: datetime = Query(..., description="Exclusive end timestamp (ISO-8601)"),
+    symbol: str = Query(..., min_length=1, max_length=16, pattern=SYMBOL_PATTERN, description="Symbol to query (e.g., AAPL)", examples=["AAPL"]),
+    interval: str = Query("1m", description="Candle interval (currently supports: 1m)", examples=["1m"]),
+    start: datetime = Query(..., description="Inclusive start timestamp (ISO-8601, timezone required)", examples=["2024-01-01T00:00:00Z"]),
+    end: datetime = Query(..., description="Exclusive end timestamp (ISO-8601, timezone required)", examples=["2024-01-01T01:00:00Z"]),
+    limit: int = Query(DEFAULT_CANDLE_LIMIT, ge=1, le=MAX_CANDLE_LIMIT, description=f"Max candles to return (1-{MAX_CANDLE_LIMIT})", examples=[500]),
     db: Session = Depends(get_db),
 ):
     """Get OHLCV candles in a time range for a symbol and interval."""
@@ -469,6 +549,7 @@ async def get_candles(
             )
         )
         .order_by(Candle.timestamp.asc())
+        .limit(limit)
         .all()
     )
 
@@ -482,7 +563,7 @@ async def get_candles(
     )
 
 
-@api.get("/")
+@api.get("/", response_model=RootResponse, responses=ERROR_RESPONSES, summary="API index", description="Returns high-level service and endpoint information.")
 async def root():
     """Root endpoint with API information."""
     return {
