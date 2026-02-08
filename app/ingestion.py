@@ -11,6 +11,7 @@ from typing import List
 from app.database import get_db_session
 from app.models import Symbol, Trade
 from app.config import settings
+from app.observability import observability
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ class IngestionService:
         logger.info(
             f"Generated {trades_created} trades at {timestamp.isoformat()}"
         )
+        observability.mark_ingestion_success(timestamp)
         return trades_created
     
     async def start(self):
