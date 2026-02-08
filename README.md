@@ -28,9 +28,11 @@ Downstream systems (ML, analytics, portfolio, and research services) should expe
 
 ## Live deployment links
 - Base URL: `https://market-data-platform-3qp7bblccq-uc.a.run.app`
+- Main Dashboard: `https://market-data-platform-3qp7bblccq-uc.a.run.app/dashboard`
 - Swagger UI: `https://market-data-platform-3qp7bblccq-uc.a.run.app/docs`
-- Health check: `https://market-data-platform-3qp7bblccq-uc.a.run.app/health`
 - Redoc Page: `https://market-data-platform-3qp7bblccq-uc.a.run.app/redoc`
+- Health check: `https://market-data-platform-3qp7bblccq-uc.a.run.app/health`
+
 
 ## Core API capabilities
 - `GET /symbols` — list available symbols with pagination bounds
