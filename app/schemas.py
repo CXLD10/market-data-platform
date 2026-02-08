@@ -12,7 +12,7 @@ class SymbolResponse(BaseModel):
     symbol: str
     name: str
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -23,9 +23,57 @@ class PriceResponse(BaseModel):
     price: float
     volume: float
     timestamp: datetime
-    
+
     class Config:
         from_attributes = True
+
+
+class TradeResponse(BaseModel):
+    """Response model for trade records."""
+    symbol: str
+    price: float
+    volume: float
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TradesListResponse(BaseModel):
+    """Response model for a list of trades in a time range."""
+    symbol: str
+    start: datetime
+    end: datetime
+    limit: int
+    count: int
+    trades: List[TradeResponse]
+
+
+class CandleResponse(BaseModel):
+    """Response model for OHLCV candle data."""
+    symbol: str
+    interval: str
+    timestamp: datetime
+    open: float = Field(alias="open_price")
+    high: float = Field(alias="high_price")
+    low: float = Field(alias="low_price")
+    close: float = Field(alias="close_price")
+    volume: float
+    trade_count: int
+
+    class Config:
+        from_attributes = True
+        populate_by_name = True
+
+
+class CandlesListResponse(BaseModel):
+    """Response model for a list of candles in a time range."""
+    symbol: str
+    interval: str
+    start: datetime
+    end: datetime
+    count: int
+    candles: List[CandleResponse]
 
 
 class HealthResponse(BaseModel):

@@ -1,10 +1,10 @@
-# Market Data Platform - Phase 1
+# Market Data Platform - Phase 2
 
 A production-oriented time-series service that acts as the authoritative source of financial price information for a broader fintech ecosystem.
 
 ## Overview
 
-This is **Phase 1** - a minimal but production-ready vertical slice that:
+This is **Phase 2** - a production-ready vertical slice that:
 - Runs locally in Docker
 - Persists data in Postgres
 - Exposes stable REST endpoints
@@ -108,6 +108,24 @@ Returns the latest price for a symbol.
 }
 ```
 
+### GET /trades?symbol=AAPL&start=...&end=...&limit=100
+Returns historical trades for a symbol within a time range.
+
+**Query Parameters:**
+- `symbol` (required): Symbol code (e.g., AAPL)
+- `start` (required): Inclusive start timestamp (ISO-8601)
+- `end` (required): Exclusive end timestamp (ISO-8601)
+- `limit` (optional): Maximum number of trades to return, default 100, max 1000
+
+### GET /candles?symbol=AAPL&interval=1m&start=...&end=...
+Returns OHLCV candles aggregated from trades in the requested period.
+
+**Query Parameters:**
+- `symbol` (required): Symbol code (e.g., AAPL)
+- `interval` (required): Candle interval (currently `1m`)
+- `start` (required): Inclusive start timestamp (ISO-8601)
+- `end` (required): Exclusive end timestamp (ISO-8601)
+
 ## Project Structure
 
 ```
@@ -144,9 +162,14 @@ All configuration is driven by environment variables (see `docker-compose.yml`):
 - Created on first startup
 
 **trades table:**
-- Stores individual trade events
-- Indexed by symbol and timestamp for efficient queries
+- Stores individual trade events with UTC timestamps
+- Indexed by symbol and timestamp for efficient range queries
 - Grows continuously as ingestion runs
+
+**candles table:**
+- Stores aggregated OHLCV bars by symbol, interval, and timestamp
+- Indexed by symbol and timestamp for time-window scans
+- Uniqueness on `(symbol, interval, timestamp)` for safe recomputation
 
 ### Ingestion Service
 
@@ -223,11 +246,6 @@ docker exec -it market-data-db psql -U marketdata -d market_data
 ## Next Phases
 
 This Phase 1 implementation provides the foundation. Future phases will add:
-
-**Phase 2 - OHLC Candles:**
-- Aggregate trades into time-based candles
-- `/candles` endpoint
-- Efficient time-series queries
 
 **Phase 3 - Observability:**
 - Prometheus metrics
