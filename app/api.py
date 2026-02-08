@@ -5,12 +5,15 @@ Provides stable interfaces for downstream consumers.
 from datetime import datetime, timezone, timedelta
 import logging
 
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy import text, and_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Symbol, Trade, Candle
+from app.config import settings
+from app.observability import observability, RequestTimer
 from app.schemas import (
     HealthResponse,
     SymbolResponse,
@@ -34,6 +37,15 @@ api = FastAPI(
     description="Authoritative source for financial price information",
     version="1.0.0"
 )
+
+
+@api.middleware("http")
+async def measure_request_latency(request: Request, call_next):
+    """Capture basic request latency metrics for all API calls."""
+    timer = RequestTimer()
+    response = await call_next(request)
+    observability.mark_request_timing(timer.elapsed_ms())
+    return response
 
 
 def _ensure_utc(ts: datetime) -> datetime:
@@ -179,6 +191,167 @@ async def health_check(db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="Service unavailable")
 
 
+@api.get("/status/ingestion")
+async def ingestion_status(db: Session = Depends(get_db)):
+    """Expose ingestion freshness and DB connectivity status."""
+    try:
+        db.execute(text("SELECT 1"))
+        db_healthy = True
+    except Exception as exc:
+        logger.error(f"DB connectivity failed for ingestion status: {exc}")
+        db_healthy = False
+
+    last_trade = None
+    if db_healthy:
+        try:
+            last_trade = db.query(Trade).order_by(Trade.timestamp.desc()).first()
+        except Exception as exc:
+            logger.error(f"Trade lookup failed for ingestion status: {exc}")
+            db_healthy = False
+    seconds_since_last_trade = None
+    if last_trade:
+        seconds_since_last_trade = (
+            datetime.now(timezone.utc) - _ensure_utc(last_trade.timestamp)
+        ).total_seconds()
+
+    heartbeat_age = observability.seconds_since_last_ingestion()
+    stale_threshold_seconds = settings.ingestion_interval_seconds * 3
+    ingestion_alive = heartbeat_age is not None and heartbeat_age <= stale_threshold_seconds
+
+    status = "alive" if ingestion_alive else "dead"
+
+    return {
+        "ingestion_status": status,
+        "ingestion_alive": ingestion_alive,
+        "stale_threshold_seconds": stale_threshold_seconds,
+        "last_successful_ingestion": observability.last_successful_ingestion,
+        "seconds_since_last_heartbeat": heartbeat_age,
+        "seconds_since_last_trade": seconds_since_last_trade,
+        "db_healthy": db_healthy,
+        "uptime_seconds": round(observability.uptime_seconds(), 3),
+        "process_started_at": observability.process_started_at,
+    }
+
+
+@api.get("/metrics")
+async def metrics(db: Session = Depends(get_db)):
+    """Runtime metrics endpoint for counts, latency, heartbeat, and DB status."""
+    db_healthy = True
+    db_error = None
+    trade_count = None
+    candle_count = None
+
+    try:
+        db.execute(text("SELECT 1"))
+        trade_count = db.query(Trade).count()
+        candle_count = db.query(Candle).count()
+    except Exception as exc:
+        db_healthy = False
+        db_error = str(exc)
+        logger.error(f"Metrics DB query failed: {exc}")
+
+    heartbeat_age = observability.seconds_since_last_ingestion()
+    request_metrics = observability.request_metrics()
+
+    return {
+        "service": "market-data-platform",
+        "process_started_at": observability.process_started_at,
+        "uptime_seconds": round(observability.uptime_seconds(), 3),
+        "db": {
+            "healthy": db_healthy,
+            "error": db_error,
+        },
+        "ingestion": {
+            "last_successful_write": observability.last_successful_ingestion,
+            "seconds_since_last_successful_write": heartbeat_age,
+            "stale_after_seconds": settings.ingestion_interval_seconds * 3,
+        },
+        "counts": {
+            "trades": trade_count,
+            "candles": candle_count,
+        },
+        "api_latency_ms": {
+            "request_count": request_metrics.request_count,
+            "average": request_metrics.average_ms,
+            "max": request_metrics.max_ms,
+            "last": request_metrics.last_ms,
+        },
+        "timestamp": datetime.now(timezone.utc),
+    }
+
+
+@api.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Simple operational dashboard that consumes API endpoints as a client."""
+    return """
+<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+  <title>Market Data Platform Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; color: #1f2937; }
+    h1 { margin-bottom: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+    .card { border: 1px solid #d1d5db; border-radius: 8px; padding: 1rem; }
+    .label { font-size: 0.85rem; color: #6b7280; margin-bottom: 0.2rem; }
+    .value { font-size: 1.4rem; font-weight: 600; }
+    .ok { color: #047857; }
+    .bad { color: #b91c1c; }
+    .small { margin-top: 1rem; color: #4b5563; }
+  </style>
+</head>
+<body>
+  <h1>Market Data Platform Dashboard</h1>
+  <div class=\"grid\">
+    <div class=\"card\"><div class=\"label\">Ingestion</div><div id=\"ingestion\" class=\"value\">-</div></div>
+    <div class=\"card\"><div class=\"label\">Seconds Since Last Trade</div><div id=\"lastTradeSec\" class=\"value\">-</div></div>
+    <div class=\"card\"><div class=\"label\">Total Trades</div><div id=\"tradeCount\" class=\"value\">-</div></div>
+    <div class=\"card\"><div class=\"label\">Total Candles</div><div id=\"candleCount\" class=\"value\">-</div></div>
+    <div class=\"card\"><div class=\"label\">DB Healthy</div><div id=\"dbHealthy\" class=\"value\">-</div></div>
+    <div class=\"card\"><div class=\"label\">Service Uptime (s)</div><div id=\"uptime\" class=\"value\">-</div></div>
+  </div>
+  <div class=\"small\">Auto refreshes every 5 seconds.</div>
+
+  <script>
+    function setValue(id, value, ok) {
+      const el = document.getElementById(id);
+      el.textContent = value;
+      el.classList.remove('ok', 'bad');
+      if (ok === true) el.classList.add('ok');
+      if (ok === false) el.classList.add('bad');
+    }
+
+    async function refresh() {
+      try {
+        const [metricsRes, statusRes] = await Promise.all([
+          fetch('/metrics'),
+          fetch('/status/ingestion')
+        ]);
+
+        const metrics = await metricsRes.json();
+        const status = await statusRes.json();
+
+        setValue('ingestion', status.ingestion_alive ? 'ALIVE' : 'DEAD', status.ingestion_alive);
+        setValue('lastTradeSec', status.seconds_since_last_trade === null ? 'N/A' : status.seconds_since_last_trade.toFixed(1));
+        setValue('tradeCount', metrics.counts.trades === null ? 'N/A' : metrics.counts.trades);
+        setValue('candleCount', metrics.counts.candles === null ? 'N/A' : metrics.counts.candles);
+        setValue('dbHealthy', metrics.db.healthy ? 'YES' : 'NO', metrics.db.healthy);
+        setValue('uptime', metrics.uptime_seconds.toFixed(1));
+      } catch (err) {
+        setValue('ingestion', 'ERROR', false);
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
+"""
+
+
 @api.get("/symbols", response_model=SymbolsListResponse)
 async def get_symbols(db: Session = Depends(get_db)):
     """
@@ -321,5 +494,8 @@ async def root():
             "latest_price": "/price/latest?symbol=AAPL",
             "trades": "/trades?symbol=AAPL&start=<ISO8601>&end=<ISO8601>&limit=100",
             "candles": "/candles?symbol=AAPL&interval=1m&start=<ISO8601>&end=<ISO8601>",
+            "metrics": "/metrics",
+            "ingestion_status": "/status/ingestion",
+            "dashboard": "/dashboard",
         }
     }

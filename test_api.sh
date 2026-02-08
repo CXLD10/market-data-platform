@@ -19,7 +19,7 @@ print_json() {
 }
 
 echo "======================================"
-echo "Market Data Platform API Test"
+echo "Market Data Platform API Test (Phase 3)"
 echo "======================================"
 echo ""
 
@@ -60,6 +60,21 @@ echo ""
 
 echo "7. Testing Candles Endpoint (1m, last 10 minutes for AAPL)..."
 curl -s "${BASE_URL}/candles?symbol=AAPL&interval=1m&start=${START_TS}&end=${END_TS}" | print_json
+echo ""
+echo ""
+
+echo "8. Testing Metrics Endpoint..."
+curl -s "${BASE_URL}/metrics" | print_json
+echo ""
+echo ""
+
+echo "9. Testing Ingestion Status Endpoint..."
+curl -s "${BASE_URL}/status/ingestion" | print_json
+echo ""
+echo ""
+
+echo "10. Testing Dashboard Endpoint (HTML head)..."
+curl -s "${BASE_URL}/dashboard" | head -n 20
 echo ""
 echo ""
 
