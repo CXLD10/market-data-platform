@@ -2,25 +2,28 @@
 Database connection and session management.
 Provides database engine and session factory.
 """
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import QueuePool
-from contextlib import contextmanager
 import logging
+from contextlib import contextmanager
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import QueuePool
 
 from app.config import settings
 from app.models import Base
 
 logger = logging.getLogger(__name__)
 
+
 # Create database engine with connection pooling
 engine = create_engine(
     settings.database_url,
     poolclass=QueuePool,
-    pool_size=5,
-    max_overflow=10,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout_seconds,
     pool_pre_ping=True,  # Verify connections before using
-    echo=False
+    echo=False,
 )
 
 # Session factory

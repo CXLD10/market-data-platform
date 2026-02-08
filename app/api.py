@@ -4,10 +4,15 @@ Provides stable interfaces for downstream consumers.
 """
 from datetime import datetime, timezone, timedelta
 import logging
+from threading import Lock
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.openapi.docs import get_redoc_html
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from sqlalchemy import text, and_
 from sqlalchemy.orm import Session
 
@@ -40,6 +45,13 @@ MAX_CANDLE_LIMIT = 5000
 DEFAULT_CANDLE_LIMIT = 500
 SUPPORTED_INTERVALS = {"1m": timedelta(minutes=1)}
 SYMBOL_PATTERN = r"^[A-Za-z0-9._-]{1,16}$"
+REDOC_ASSET_PATH = "/redoc-assets/redoc.standalone.js"
+REDOC_BUNDLE_URLS = (
+    "https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js",
+    "https://cdn.jsdelivr.net/npm/redoc@2.1.3/bundles/redoc.standalone.js",
+)
+_redoc_bundle_cache: bytes | None = None
+_redoc_bundle_lock = Lock()
 
 # Create FastAPI app
 api = FastAPI(
@@ -49,7 +61,8 @@ api = FastAPI(
         "All endpoints are read-only and return UTC timestamps. "
         "Errors use the standardized shape `{error, details, status}`."
     ),
-    version="1.0.0"
+    version="1.0.0",
+    redoc_url=None,
 )
 
 
@@ -75,6 +88,65 @@ ERROR_RESPONSES = {
         "content": {"application/json": {"example": {"error": "internal_server_error", "details": "Unexpected server error", "status": 500}}},
     },
 }
+
+
+def _load_redoc_bundle() -> bytes:
+    """Download and cache the ReDoc bundle for same-origin serving."""
+    global _redoc_bundle_cache
+    with _redoc_bundle_lock:
+        if _redoc_bundle_cache is not None:
+            return _redoc_bundle_cache
+
+        for url in REDOC_BUNDLE_URLS:
+            try:
+                request = Request(url, headers={"User-Agent": "market-data-platform/1.0"})
+                with urlopen(request, timeout=8) as response:
+                    payload = response.read()
+
+                if payload:
+                    _redoc_bundle_cache = payload
+                    logger.info("Loaded ReDoc bundle", extra={"url": url, "size": len(payload)})
+                    return payload
+            except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                logger.warning(f"Failed to load ReDoc bundle from {url}: {exc}")
+
+    raise HTTPException(status_code=503, detail="Unable to load ReDoc assets")
+
+
+def _custom_openapi():
+    """Pin OpenAPI output to 3.0.3 for ReDoc compatibility."""
+    if api.openapi_schema:
+        return api.openapi_schema
+
+    schema = get_openapi(
+        title=api.title,
+        version=api.version,
+        description=api.description,
+        routes=api.routes,
+    )
+    schema["openapi"] = "3.0.3"
+    api.openapi_schema = schema
+    return api.openapi_schema
+
+
+api.openapi = _custom_openapi
+
+
+@api.get(REDOC_ASSET_PATH, include_in_schema=False)
+async def redoc_bundle():
+    """Serve ReDoc JavaScript from this service to avoid client-side CDN blocks."""
+    return Response(content=_load_redoc_bundle(), media_type="application/javascript")
+
+
+@api.get("/redoc", include_in_schema=False)
+async def redoc_html():
+    """Serve ReDoc HTML pointing to same-origin JavaScript asset."""
+    return get_redoc_html(
+        openapi_url=api.openapi_url,
+        title=f"{api.title} - ReDoc",
+        redoc_js_url=REDOC_ASSET_PATH,
+        with_google_fonts=False,
+    )
 
 
 
