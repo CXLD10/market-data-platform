@@ -1,175 +1,102 @@
 # Market Data Platform
 
-A production-oriented time-series service that acts as the authoritative source of financial price information.
+## System purpose
+The Market Data Platform is a FastAPI service that provides a single authoritative HTTP interface for market prices and derived candles. It ingests trade events, stores time-series data in PostgreSQL, and exposes read APIs for downstream systems that require deterministic and queryable market data.
 
-## Cloud-native runtime behavior
+## Ownership boundaries
+This service owns:
+- symbol bootstrap and synthetic trade ingestion lifecycle
+- persistence of symbols, trades, and candle aggregates
+- HTTP contracts for market data reads
+- runtime health and ingestion observability endpoints
 
-This service is designed to run unchanged in both local Docker and Cloud Run:
-- Binds to `HOST` / `PORT` (Cloud Run injects `PORT`).
-- Uses only `DATABASE_URL` for PostgreSQL connectivity.
-- Supports Cloud SQL Unix socket URLs (for example: `postgresql://USER:PASSWORD@/DB?host=/cloudsql/INSTANCE`).
-- Logs to stdout/stderr.
-- Treats filesystem as ephemeral (no local persistence required).
-- Supports clean startup/shutdown via FastAPI lifespan hooks.
+This service does **not** own:
+- portfolio logic
+- model training logic
+- strategy execution logic
+- client-side caching policies in downstream systems
 
-## Quick start (local Docker)
+Consumers are expected to treat this service as the source of truth and avoid direct database coupling.
 
-```bash
-docker compose up -d --build
-```
+## What downstream systems should expect
+Downstream systems (ML, analytics, portfolio, and research services) should expect:
+- stable read-only HTTP APIs for latest, historical, and aggregated price data
+- UTC timestamps and bounded query windows
+- typed error payloads (`error`, `details`, `status`)
+- ingestion freshness visibility via dedicated operational endpoints
+- backward-compatible evolution of existing contracts
 
-API base URL: `http://localhost:8000`
+## Live deployment links
+- Base URL: `https://YOUR_CLOUD_RUN_URL`
+- Swagger UI: `https://YOUR_CLOUD_RUN_URL/docs`
+- Health check: `https://YOUR_CLOUD_RUN_URL/health`
 
-Run smoke test:
+## Core API capabilities
+- `GET /symbols` — list available symbols with pagination bounds
+- `GET /price/latest?symbol=...` — latest trade snapshot per symbol
+- `GET /trades?symbol=...&start=...&end=...&limit=...` — historical trade retrieval
+- `GET /candles?symbol=...&interval=1m&start=...&end=...` — OHLCV aggregation view
+- `GET /health` — service and database health
+- `GET /status/ingestion` — heartbeat freshness and ingestion liveness
+- `GET /metrics` — process uptime and request timing aggregates
 
-```bash
-./test_api.sh
-```
+## Operational features
+- startup schema initialization (`create_all`) during service boot
+- periodic ingestion loop with bounded retry behavior
+- DB connection pooling with pre-ping health checks
+- standardized request validation and structured error handling
+- in-memory runtime telemetry for request latency and ingestion heartbeats
+- process-safe container logging to stdout/stderr for Cloud Run
 
-## Environment variables
+## Cloud deployment model
+Production deployment is containerized and cloud-native:
+- image built with `Dockerfile` and deployed to Cloud Run
+- PostgreSQL hosted in Cloud SQL, connected through Unix socket (`DATABASE_URL`)
+- CI/CD path defined through `cloudbuild.yaml` (build, push, deploy)
+- environment-driven runtime configuration (`HOST`, `PORT`, ingestion interval, DB pool settings)
+- stateless app instances; durable market data persisted in PostgreSQL
 
-All runtime configuration is environment-driven.
+## Development philosophy
+- API-first contracts for all inter-service integrations
+- explicit validation at service boundaries
+- incremental delivery in phases with compatibility preservation
+- operational visibility treated as part of product completeness
+- separation between ingestion concerns and read API concerns
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `DATABASE_URL` | Yes | - | SQLAlchemy PostgreSQL URL used by the app. |
-| `HOST` | No | `0.0.0.0` | HTTP bind host. |
-| `PORT` | No | `8000` | HTTP bind port (Cloud Run sets this automatically). |
-| `LOG_LEVEL` | No | `INFO` | Application log level. |
-| `INGESTION_INTERVAL_SECONDS` | No | `3` | Synthetic trade ingestion interval. |
-| `DB_POOL_SIZE` | No | `5` | SQLAlchemy connection pool size. |
-| `DB_MAX_OVERFLOW` | No | `10` | Extra DB connections allowed above pool size. |
-| `DB_POOL_TIMEOUT_SECONDS` | No | `30` | Seconds to wait for an available pooled DB connection. |
+## Service interoperability strategy
+Interoperability is enforced through HTTP APIs rather than shared DB access:
+- each downstream system integrates via documented endpoints
+- contracts are centrally versioned in OpenAPI (`/docs`)
+- symbol/time window conventions are normalized in one place
+- platform-level governance can evolve APIs while preserving existing integrations
 
-## API endpoints
+This approach reduces cross-team coupling and allows downstream services to scale independently.
 
-- `GET /health`
-- `GET /symbols`
-- `GET /price/latest?symbol=AAPL`
-- `GET /trades?symbol=AAPL&start=<ISO8601>&end=<ISO8601>&limit=100`
-- `GET /candles?symbol=AAPL&interval=1m&start=<ISO8601>&end=<ISO8601>`
-- `GET /metrics`
-- `GET /status/ingestion`
-- `GET /dashboard`
+## Project evolution (incremental maturity)
+The platform evolved in explicit phases to improve reliability without breaking existing consumers.
 
----
+### Phase 1 — minimal ingestion, persistence, and API
+- introduced baseline symbol model, trade ingestion loop, and latest-price/health APIs
+- established PostgreSQL as durable backing store and FastAPI as contract boundary
 
-## End-to-end GCP setup (run and test without local hosting)
+### Phase 2 — historical access and aggregation
+- added bounded historical trades retrieval and OHLCV candle computation
+- introduced interval and time-range validation to constrain query correctness
 
-Use this once per new project.
+### Phase 3 — observability and health visibility
+- added ingestion liveness status, freshness thresholds, and runtime metrics
+- exposed operational endpoints to support production diagnostics
 
-### 1) Set variables and enable APIs
+### Phase 4 — contract hardening and consumer readiness
+- standardized error payloads and request validation semantics
+- clarified pagination/limit controls and endpoint documentation for consumers
 
-```bash
-export PROJECT_ID="your-project-id"
-export REGION="us-central1"
-export SERVICE_NAME="market-data-platform"
-export AR_REPO="market-data"
-export DB_INSTANCE="market-data-pg"
-export DB_NAME="market_data"
-export DB_USER="marketdata"
-export DB_PASSWORD="change-me-strong-password"
+### Phase 5 — cloud-native deployment
+- productionized deployment with Docker, Cloud Build, Cloud Run, and Cloud SQL
+- ensured env-driven configuration and stateless runtime behavior for horizontal scaling
 
-gcloud config set project "$PROJECT_ID"
-gcloud services enable \
-  run.googleapis.com \
-  sqladmin.googleapis.com \
-  artifactregistry.googleapis.com \
-  cloudbuild.googleapis.com \
-  secretmanager.googleapis.com
-```
+Each phase preserved backward compatibility for existing endpoints and improved the system’s operational confidence for integrators.
 
-### 2) Create Artifact Registry repo
-
-```bash
-gcloud artifacts repositories create "$AR_REPO" \
-  --repository-format=docker \
-  --location="$REGION" \
-  --description="Docker images for Market Data Platform"
-```
-
-### 3) Create Cloud SQL (PostgreSQL)
-
-```bash
-gcloud sql instances create "$DB_INSTANCE" \
-  --database-version=POSTGRES_15 \
-  --cpu=1 \
-  --memory=3840MB \
-  --region="$REGION"
-
-gcloud sql databases create "$DB_NAME" --instance="$DB_INSTANCE"
-gcloud sql users create "$DB_USER" --instance="$DB_INSTANCE" --password="$DB_PASSWORD"
-```
-
-### 4) Build and push image
-
-```bash
-TAG="$(git rev-parse --short HEAD)"
-IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${SERVICE_NAME}:${TAG}"
-
-gcloud auth configure-docker "${REGION}-docker.pkg.dev"
-docker build -t "$IMAGE_URI" .
-docker push "$IMAGE_URI"
-```
-
-### 5) Deploy to Cloud Run (Cloud SQL Unix socket)
-
-```bash
-INSTANCE_CONNECTION_NAME="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(connectionName)')"
-DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@/${DB_NAME}?host=/cloudsql/${INSTANCE_CONNECTION_NAME}"
-
-gcloud run deploy "$SERVICE_NAME" \
-  --image "$IMAGE_URI" \
-  --platform managed \
-  --region "$REGION" \
-  --allow-unauthenticated \
-  --add-cloudsql-instances "$INSTANCE_CONNECTION_NAME" \
-  --set-env-vars "DATABASE_URL=${DATABASE_URL},LOG_LEVEL=INFO,INGESTION_INTERVAL_SECONDS=3"
-```
-
-### 6) Test directly on Cloud Run
-
-```bash
-SERVICE_URL="$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='value(status.url)')"
-
-curl -sSf "$SERVICE_URL/health"
-curl -sSf "$SERVICE_URL/symbols"
-curl -sSf "$SERVICE_URL/status/ingestion"
-```
-
-### 7) Observe logs and troubleshoot
-
-```bash
-gcloud run services logs read "$SERVICE_NAME" --region "$REGION" --limit=200
-```
-
----
-
-## CI/CD pipeline status
-
-### Is a pipeline created automatically?
-No. A deployment pipeline is **not created automatically** just by deploying Cloud Run.
-
-### What is included in this repo now?
-A `cloudbuild.yaml` is included to provide a ready Cloud Build pipeline that:
-1. Builds the container image.
-2. Pushes it to Artifact Registry.
-3. Deploys to Cloud Run.
-
-### How to connect pipeline to Git pushes
-
-```bash
-gcloud builds triggers create github \
-  --name="${SERVICE_NAME}-main" \
-  --repo-name="YOUR_GITHUB_REPO" \
-  --repo-owner="YOUR_GITHUB_ORG_OR_USER" \
-  --branch-pattern="^main$" \
-  --build-config="cloudbuild.yaml" \
-  --substitutions="_REGION=${REGION},_AR_REPO=${AR_REPO},_SERVICE_NAME=${SERVICE_NAME},_INSTANCE_CONNECTION_NAME=${INSTANCE_CONNECTION_NAME},_DATABASE_URL=${DATABASE_URL},_LOG_LEVEL=INFO,_INGESTION_INTERVAL_SECONDS=3"
-```
-
-After this, each push to `main` can automatically deploy to Cloud Run.
-
-## Scaling awareness
-
-Cloud Run may run multiple instances. This service does not require local disk state. In-memory runtime metrics are instance-local by design; authoritative market data remains in PostgreSQL.
+## Additional docs
+- [Architecture](./architecture.md)
+- [Local Quickstart](./quickstart.md)
