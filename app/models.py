@@ -41,3 +41,31 @@ class Trade(Base):
     
     def __repr__(self):
         return f"<Trade(symbol={self.symbol}, price={self.price}, timestamp={self.timestamp})>"
+
+
+class Candle(Base):
+    """Represents aggregated OHLCV candlestick data for a symbol and interval."""
+    __tablename__ = "candles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), ForeignKey("symbols.symbol"), nullable=False, index=True)
+    interval = Column(String(10), nullable=False)
+    timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
+    open_price = Column(Float, nullable=False)
+    high_price = Column(Float, nullable=False)
+    low_price = Column(Float, nullable=False)
+    close_price = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False)
+    trade_count = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index('ix_candles_symbol_timestamp', 'symbol', 'timestamp'),
+        Index('ux_candles_symbol_interval_timestamp', 'symbol', 'interval', 'timestamp', unique=True),
+    )
+
+    def __repr__(self):
+        return (
+            f"<Candle(symbol={self.symbol}, interval={self.interval}, "
+            f"timestamp={self.timestamp})>"
+        )
