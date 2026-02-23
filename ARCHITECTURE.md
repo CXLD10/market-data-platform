@@ -1,87 +1,48 @@
-# Architecture - Phase 3
+# Architecture
 
-## System Summary
+## Overview
 
-Market Data Platform is an independent service that:
-1. Ingests synthetic trade data continuously
-2. Persists canonical records in PostgreSQL
-3. Serves stable HTTP APIs for downstream systems
-4. Exposes runtime observability and a simple operator dashboard
+Market Data Gateway is a stateless FastAPI service that fetches market data on demand from Yahoo Finance, normalizes responses, and serves exchange-neutral APIs.
 
-## High-Level Components
+## Design constraints
 
-- **FastAPI application** (`app/api.py`, `app/main.py`)
-- **Ingestion loop** (`app/ingestion.py`)
-- **Relational storage** (PostgreSQL via SQLAlchemy)
-- **Observability runtime state** (`app/observability.py`)
-- **Dashboard UI** (server-rendered HTML at `/dashboard`)
+- No database
+- No historical persistence
+- No Redis or external cache
+- In-memory TTL caching only
+- Deterministic response contracts
 
-## Data Model
+## Runtime modules
 
-### `symbols`
-List of supported symbols (AAPL, GOOGL, MSFT, TSLA, AMZN).
+- `app/api/routes.py` - HTTP routes, middleware, degradation behavior
+- `app/exchanges/yahoo_adapter.py` - provider adapter and normalization input layer
+- `app/services/*` - use-case services (quote, intraday, historical, fundamentals, search)
+- `app/cache/ttl_cache.py` - in-memory TTL cache with hit/miss metrics
+- `app/resilience_circuit_breaker.py` - per-exchange circuit management
+- `app/internal_metrics.py` - in-memory operational metrics
+- `app/utils/*` - symbol/exchange normalization, validation, market hours logic
+- `app/schemas/*` - strict response schemas
 
-### `trades`
-Raw trade events with timestamp, symbol, price, and volume.
+## Resilience flow
 
-### `candles`
-OHLCV aggregations by symbol, interval, and bucket timestamp.
+1. Request enters route.
+2. Exchange and symbol are validated.
+3. Circuit state checked per exchange.
+4. If OPEN: return cache fallback if present, otherwise structured error.
+5. If execution allowed: fetch via adapter/service.
+6. Validate and normalize output.
+7. Record success/failure and metrics.
 
-## Request/Processing Flows
+## Observability
 
-### Ingestion flow
-1. Startup initializes symbols.
-2. Every `INGESTION_INTERVAL_SECONDS`, service generates trades.
-3. Writes are committed as a batch transaction.
-4. On successful commit, ingestion heartbeat is updated.
+- `/metrics` returns process-level request/cache/latency summary.
+- `/exchanges/status` returns per-exchange state and failure/latency indicators.
+- `/market-status` returns deterministic exchange session status from static trading-hour rules.
 
-### Historical candle flow
-1. Client requests `/candles` for range + interval.
-2. Service scans matching trades, computes OHLCV buckets.
-3. Upserts candle rows and returns ordered candle response.
+## Deployment model
 
-### Observability flow
-- Middleware measures API request latency.
-- `/metrics` returns:
-  - counts (trades/candles)
-  - API latency aggregates
-  - DB health
-  - uptime/start time
-  - ingestion freshness stats
-- `/status/ingestion` returns:
-  - alive/dead status
-  - heartbeat age
-  - seconds since last trade
-  - DB health
-  - uptime/start time
+- Containerized and Cloud Run deployable
+- Non-root runtime user
+- Environment-driven settings
+- Horizontal scale with instance-local in-memory state
 
-## Freshness Model
-
-- Heartbeat = last successful ingestion write.
-- Stale threshold = `INGESTION_INTERVAL_SECONDS * 3`.
-- If heartbeat age exceeds threshold, ingestion is marked dead/stale.
-
-This model is intentionally conservative and easy for downstream consumers to reason about.
-
-## Dashboard Constraints
-
-`/dashboard` **must act as an external client**:
-- It fetches `/metrics` and `/status/ingestion` via HTTP.
-- It does not read the DB directly.
-
-This ensures operational UI behavior matches real downstream integrations.
-
-## Reliability Properties
-
-- API contracts are additive and stable.
-- DB pool pre-ping helps avoid stale connections.
-- Ingestion loop recovers from transient errors and keeps running.
-- Health and status endpoints provide quick service diagnostics.
-
-## Deployment Model
-
-- Docker Compose for local deployment:
-  - `postgres` service
-  - `api` service
-- `api` starts with `python -m app.main`
-- Environment-driven configuration (12-factor style)
