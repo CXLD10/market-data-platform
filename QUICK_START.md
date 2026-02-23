@@ -1,84 +1,57 @@
-# Quick Start - Phase 3
+# Quick Start
 
-Get the Market Data Platform running locally with observability and dashboard support.
+## Prerequisites
 
-## 1) Start the services
+- Python 3.11+
+- pip
 
-```bash
-docker compose up -d --build
-```
-
-## 2) Verify containers
+## Run locally
 
 ```bash
-docker compose ps
-docker compose logs -f api
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m app.main
 ```
 
-## 3) Validate core APIs
+Service default URL: `http://localhost:8000`
+
+## Smoke test endpoints
 
 ```bash
-curl -s http://localhost:8000/health | python3 -m json.tool
-curl -s http://localhost:8000/symbols | python3 -m json.tool
-curl -s "http://localhost:8000/price/latest?symbol=AAPL" | python3 -m json.tool
+curl "http://localhost:8000/health"
+curl "http://localhost:8000/quote?symbol=INFY&exchange=NSE"
+curl "http://localhost:8000/search?query=INFY"
+curl "http://localhost:8000/metrics"
 ```
 
-## 4) Validate historical APIs
+## Run tests
 
 ```bash
-END_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-START_TS=$(date -u -d '10 minutes ago' +"%Y-%m-%dT%H:%M:%SZ")
-
-curl -s "http://localhost:8000/trades?symbol=AAPL&start=${START_TS}&end=${END_TS}&limit=100" | python3 -m json.tool
-curl -s "http://localhost:8000/candles?symbol=AAPL&interval=1m&start=${START_TS}&end=${END_TS}" | python3 -m json.tool
+PYTHONPATH=. pytest -q
 ```
 
-## 5) Validate Phase 3 observability APIs
+## Docker local run
 
 ```bash
-curl -s http://localhost:8000/metrics | python3 -m json.tool
-curl -s http://localhost:8000/status/ingestion | python3 -m json.tool
+docker build -t market-data-gateway:local .
+docker run --rm -p 8000:8000 market-data-gateway:local
 ```
 
-## 6) Open dashboard
-
-Visit:
-
-```text
-http://localhost:8000/dashboard
-```
-
-If you are in a non-GUI shell/VM/container, use curl:
+## Cloud Run deploy (manual)
 
 ```bash
-curl -s http://localhost:8000/dashboard | head -n 40
+PROJECT_ID=<your-project>
+REGION=us-central1
+SERVICE=market-data-gateway
+REPO=market-data
+IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:latest"
+
+gcloud builds submit --tag "$IMAGE"
+
+gcloud run deploy "$SERVICE" \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --platform managed \
+  --allow-unauthenticated
 ```
-
-## 7) Run bundled smoke test
-
-```bash
-chmod +x test_api.sh
-./test_api.sh
-```
-
-## Troubleshooting
-
-### `/metrics` or `/status/ingestion` returns 404
-You are likely running an old image.
-
-```bash
-docker compose down
-docker compose up -d --build --force-recreate
-```
-
-### Browser open command fails (e.g., xdg-open/open)
-No desktop browser is installed in your environment. Use curl checks or open URL from your local machine.
-
-### Freshness appears stale
-Check ingestion logs:
-
-```bash
-docker compose logs -f api
-```
-
-You should see periodic `Generated X trades` messages.

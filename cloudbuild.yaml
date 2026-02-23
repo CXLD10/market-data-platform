@@ -5,6 +5,8 @@ steps:
       - build
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:$COMMIT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:latest
       - .
 
   - name: gcr.io/cloud-builders/docker
@@ -12,6 +14,12 @@ steps:
     args:
       - push
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:$COMMIT_SHA
+
+  - name: gcr.io/cloud-builders/docker
+    id: Push latest image
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:latest
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: Deploy to Cloud Run
@@ -27,19 +35,15 @@ steps:
       - --region
       - ${_REGION}
       - --allow-unauthenticated
-      - --add-cloudsql-instances
-      - ${_INSTANCE_CONNECTION_NAME}
       - --set-env-vars
-      - DATABASE_URL=${_DATABASE_URL},LOG_LEVEL=${_LOG_LEVEL},INGESTION_INTERVAL_SECONDS=${_INGESTION_INTERVAL_SECONDS}
+      - LOG_LEVEL=${_LOG_LEVEL}
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:latest
 
 substitutions:
   _REGION: us-central1
   _AR_REPO: market-data
-  _SERVICE_NAME: market-data-platform
-  _INSTANCE_CONNECTION_NAME: project:region:instance
-  _DATABASE_URL: postgresql://USER:PASSWORD@/DB?host=/cloudsql/project:region:instance
+  _SERVICE_NAME: market-data-gateway
   _LOG_LEVEL: INFO
-  _INGESTION_INTERVAL_SECONDS: "3"
